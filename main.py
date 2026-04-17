@@ -3,15 +3,17 @@ import yt_dlp
 import os
 import tempfile
 import base64
-import re
 
 app = Flask(__name__)
 
-def extrair_shortcode(url):
-    match = re.search(r'/p/([^/]+)|/reel/([^/]+)', url)
-    if match:
-        return match.group(1) or match.group(2)
-    return None
+def get_cookies_file(tmpdir):
+    cookies = os.environ.get('IG_COOKIES', '')
+    if not cookies:
+        return None
+    cookies_path = os.path.join(tmpdir, 'cookies.txt')
+    with open(cookies_path, 'w') as f:
+        f.write(cookies)
+    return cookies_path
 
 @app.route('/download', methods=['GET'])
 def download():
@@ -21,28 +23,38 @@ def download():
 
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
+            cookies_file = get_cookies_file(tmpdir)
+
             ydl_opts = {
                 'outtmpl': os.path.join(tmpdir, '%(title)s.%(ext)s'),
                 'writeinfojson': True,
                 'quiet': True,
                 'no_warnings': True,
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15'
+                }
             }
+
+            if cookies_file:
+                ydl_opts['cookiefile'] = cookies_file
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
 
             arquivos = []
             legenda = info.get('description', '') or info.get('title', '')
-            tipo = 'Reels' if info.get('ext') == 'mp4' else 'Foto'
+            tipo = 'Reels'
 
-            for f in os.listdir(tmpdir):
-                if f.endswith('.json'):
+            for f in sorted(os.listdir(tmpdir)):
+                if f.endswith('.json') or f == 'cookies.txt':
                     continue
                 filepath = os.path.join(tmpdir, f)
+                ext = f.split('.')[-1].lower()
+                if ext not in ['mp4', 'jpg', 'jpeg', 'png', 'webp']:
+                    continue
                 with open(filepath, 'rb') as file:
                     conteudo = base64.b64encode(file.read()).decode('utf-8')
-                ext = f.split('.')[-1].lower()
-                mime = 'video/mp4' if ext == 'mp4' else f'image/{ext}'
+                mime = 'video/mp4' if ext == 'mp4' else f'image/{"jpeg" if ext == "jpg" else ext}'
                 arquivos.append({
                     "nome": f,
                     "ext": ext,
@@ -50,8 +62,11 @@ def download():
                     "base64": conteudo
                 })
 
-            if len(arquivos) > 1:
+            imagens = [a for a in arquivos if a['ext'] != 'mp4']
+            if len(imagens) > 1:
                 tipo = 'Carrossel'
+            elif len(imagens) == 1:
+                tipo = 'Foto'
 
             return jsonify({
                 "sucesso": True,
@@ -62,7 +77,7 @@ def download():
             })
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e), "sucesso": False}), 500
 
 @app.route('/health', methods=['GET'])
 def health():
